@@ -1,0 +1,205 @@
+DROP PROCEDURE cinud_fjremove;
+
+DELIMITER $$
+CREATE PROCEDURE cinud_fjremove ()
+BEGIN
+
+DECLARE v_finished INTEGER DEFAULT 0;
+
+DECLARE v_menuid int DEFAULT 0;
+DECLARE v_title VARCHAR(255) DEFAULT '';
+DECLARE v_aid int DEFAULT 0;
+DECLARE v_kwords MEDIUMTEXT DEFAULT "";
+DECLARE v_match VARCHAR(25);
+DECLARE v_cid MEDIUMTEXT DEFAULT "";
+DECLARE v_author int DEFAULT 0;
+DECLARE v_alias int DEFAULT 0;
+
+DECLARE v_tcnt int DEFAULT 0;
+DECLARE v_tid int DEFAULT 0;
+DECLARE v_maxrgt int DEFAULT 0;
+DECLARE v_atitle VARCHAR(255) DEFAULT '';
+
+DECLARE v_intro LONGTEXT DEFAULT "";
+DECLARE v_uid int DEFAULT 0;
+DECLARE v_ualias VARCHAR(255) DEFAULT NULL;
+DECLARE v_metadesc MEDIUMTEXT DEFAULT "";
+
+DECLARE keys TEXT;
+DECLARE keySeparator CHAR(1) DEFAULT ',';
+DECLARE sqlConnector VARCHAR(4);
+DECLARE likes TEXT DEFAULT '';
+DECLARE keywordSelection LONGTEXT DEFAULT '';
+
+DECLARE v_condition VARCHAR(500) DEFAULT '';
+DECLARE matchAuthorAliasCondition VARCHAR(255) DEFAULT '';
+
+DECLARE v_afinished INTEGER DEFAULT 0;
+
+DECLARE v_articleid int DEFAULT 0;
+
+-- declare cursor for article id
+DEClARE id_cursor CURSOR FOR 
+SELECT
+	id,
+    title, 
+    REPLACE(JSON_EXTRACT(params, '$.id'), '"', '') AS 'aid', 
+    REPLACE(JSON_EXTRACT(params, '$.keywords'), '"', '') AS 'keywords', 
+    REPLACE(JSON_EXTRACT(params, '$.anyOrAll'), '"', '') AS 'anyOrAll', 
+    REPLACE(REPLACE(REPLACE(JSON_EXTRACT(params, '$.catid'), '"', ''), '[', ''), ']', '') AS 'catid', 
+    REPLACE(JSON_EXTRACT(params, '$.matchAuthor'), '"', '') AS 'matchAuthor', 
+    REPLACE(JSON_EXTRACT(params, '$.matchAuthorAlias'), '"', '') AS 'matchAuthorAlias' 
+FROM 
+    j17_menu
+WHERE 
+    published = 1 
+    AND client_id = 0 
+    AND component_id = 10143 
+    AND id IN (786, 1439);
+
+-- declare NOT FOUND handler
+DECLARE CONTINUE HANDLER 
+       FOR NOT FOUND SET v_finished = 1;
+ 
+OPEN id_cursor;
+ 
+get_id: LOOP
+	FETCH id_cursor INTO v_menuid, v_title, v_aid, v_kwords, v_match, v_cid, v_author, v_alias;
+ 
+	IF v_finished = 1 THEN
+		LEAVE get_id;
+	END IF;
+	
+	-- check if the title tag exists.
+	SELECT count(*) INTO v_tcnt FROM j17_tags where title = v_title;
+	
+	IF v_tcnt > 0 THEN
+		SELECT id INTO v_tid FROM j17_tags where title = v_title;
+	ELSE
+		SELECT MAX(rgt) into v_maxrgt FROM j17_tags;
+
+		SET v_atitle = REPLACE(v_title,'?','');
+		SET v_atitle = REPLACE(v_atitle,'!','');
+		SET v_atitle = REPLACE(v_atitle,'&','');
+		SET v_atitle = REPLACE(v_atitle,"'","");
+		SET v_atitle = REPLACE(v_atitle,'(','');
+		SET v_atitle = REPLACE(v_atitle,')','');
+		SET v_atitle = REPLACE(v_atitle,'-','');
+		SET v_atitle = REPLACE(v_atitle,'.','');
+		SET v_atitle = REPLACE(v_atitle,'/','');
+		SET v_atitle = REPLACE(v_atitle,'’','');
+		SET v_atitle = REPLACE(v_atitle,' ','-');
+		
+		INSERT INTO j17_tags
+			(parent_id, level, path, title, alias, published,access, created_user_id, rgt, lgt)
+		VALUES
+			(1, 1, lower(v_atitle), v_title, lower(v_atitle), 1, 1, 42, (v_maxrgt + 2), (v_maxrgt + 1) );
+		
+		UPDATE j17_tags SET rgt = (v_maxrgt + 3) WHERE j17_tags.id = 1;
+
+		SELECT id INTO v_tid FROM j17_tags where title = v_title;
+	END IF;
+	
+	-- check if intro article is present
+	IF v_aid > 0 THEN
+		SELECT introtext, created_by, created_by_alias, metakey, metadesc INTO v_intro, v_uid, v_ualias, v_kwords, v_metadesc FROM j17_content WHERE ID = v_aid;
+	END IF;
+
+	-- any or all condition
+	IF (v_kwords <> '' AND v_kwords IS NOT NULL) THEN	
+		SET v_kwords = TRIM(v_kwords);
+		SET keys = REPLACE(v_kwords, keySeparator, CONCAT(keySeparator, ' '));
+		SET keys = CONCAT(keySeparator, keys, keySeparator);
+		SET sqlConnector = IF(v_match = 'any', ' OR ', ' AND ');
+    
+		WHILE LENGTH(keys) > 0 DO
+			SET likes = CONCAT(likes, ',', SUBSTRING_INDEX(keys, keySeparator, 2), ',');
+			SET keys = SUBSTRING(keys, LENGTH(SUBSTRING_INDEX(keys, keySeparator, 2)) + 2);
+		END WHILE;
+    
+		WITH RECURSIVE cte AS (
+			SELECT 1 AS n, 
+				SUBSTRING_INDEX(likes, ',', 1) AS keyword
+			UNION ALL
+			SELECT n + 1, 
+				SUBSTRING_INDEX(SUBSTRING_INDEX(likes, ',', n + 1), ',', -1) AS keyword
+			FROM cte
+			WHERE LENGTH(likes) > LENGTH(keyword)
+		)
+		SELECT GROUP_CONCAT(
+			'CONCAT(",", REPLACE(a.metakey, ", ", ","), ",") LIKE "%', 
+			keyword, 
+			'%" SEPARATOR ' ' , '
+			', sqlConnector, '
+			'
+		) INTO keywordSelection
+		FROM cte
+		WHERE keyword != '';
+	END IF
+	
+	-- author or alias
+	IF v_author = 1 THEN
+		SET v_condition = CONCAT(' ', sqlConnector, ' a.created_by = ', v_uid);
+	END IF;
+
+    IF (v_alias = 1 AND v_ualias IS NOT NULL) THEN
+		SET matchAuthorAliasCondition = CONCAT(' ', sqlConnector, ' UPPER(a.created_by_alias) = ', QUOTE(UPPER(v_ualias)), ' ');
+	ELSE
+		SET matchAuthorAliasCondition = '';
+	END IF;	
+	
+	-- full query
+	SET query = 'SELECT ID FROM j17_content a WHERE STATE = 1 ';
+	
+	IF v_cid <> '' THEN
+		SET query = CONCAT(query, ' AND a.catid in ',  v_cid)
+	END IF;
+	
+	IF keywordSelection <> '' THEN
+		SET query = CONCAT(query, ' AND ', keywordSelection)
+	END IF;
+	
+	IF v_condition <> '' THEN
+		SET query = CONCAT(query, v_condition)
+	END IF;
+
+	IF matchAuthorAliasCondition <> '' THEN
+		SET query = CONCAT(query, matchAuthorAliasCondition)
+	END IF;		
+	
+	-- second loop
+	DEClARE aid_cursor CURSOR FOR query;
+
+	-- declare NOT FOUND handler
+	DECLARE CONTINUE HANDLER 
+		FOR NOT FOUND SET v_afinished = 1;
+ 
+	OPEN aid_cursor;
+ 
+	get_aid: LOOP
+		FETCH aid_cursor INTO v_articleid;
+		
+		IF v_afinished = 1 THEN
+			LEAVE get_aid;
+		END IF;
+		
+		-- add tag
+		INSERT INTO j17_contentitem_tag_map (tag_id, type_alias, content_item_id)
+		VALUES (v_tid, 'com_content.article', v_articleid);
+		
+	END LOOP get_aid;
+ 
+	CLOSE aid_cursor;
+	
+	-- update menu
+	SET v_link = CONCAT('index.php?option=com_tags&view=tag&layout=list&id[0]=', v_tid, '&types[0]=1');
+	UPDATE j17_menu 
+	SET link = v_link, 
+	component_id = '29', 
+	params = '{\"show_tag_title\":\"\",\"tag_list_show_tag_image\":\"\",\"tag_list_show_tag_description\":\"\",\"tag_list_image\":\"\",\"tag_list_description\":\"\",\"tag_list_orderby\":\"\",\"tag_list_orderby_direction\":\"\",\"tag_list_show_item_image\":\"\",\"tag_list_show_item_description\":\"\",\"tag_list_item_maximum_characters\":\"\",\"filter_field\":\"\",\"show_pagination_limit\":\"0\",\"display_num\":\"0\",\"show_pagination\":\"1\",\"show_pagination_results\":\"\",\"tag_list_show_date\":\"\",\"date_format\":\"\",\"return_any_or_all\":\"\",\"include_children\":\"\",\"show_feed_link\":\"0\",\"menu-anchor_title\":\"\",\"menu-anchor_css\":\"\",\"menu_image\":\"\",\"menu_image_css\":\"\",\"menu_text\":1,\"menu_show\":1,\"page_title\":\"\",\"show_page_heading\":\"0\",\"page_heading\":\"\",\"pageclass_sfx\":\"\",\"menu-meta_description\":\"\",\"menu-meta_keywords\":\"\",\"robots\":\"\",\"secure\":0}' 
+	WHERE j17_menu.id = v_menuid;	
+
+END LOOP get_id;
+ 
+CLOSE id_cursor;
+END$$	
