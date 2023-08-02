@@ -1,5 +1,3 @@
-DROP PROCEDURE cinud_fjremove_tags;
-
 DELIMITER $$
 CREATE PROCEDURE cinud_fjremove_tags ()
 BEGIN
@@ -129,11 +127,11 @@ BEGIN
 		IF v_aid > 0 THEN
 			SELECT introtext, created_by, created_by_alias, metakey, metadesc INTO v_intro, v_uid, v_ualias, v_kwords, v_metadesc FROM j17_content WHERE ID = v_aid;
 			
-			SET l_pos=LOCATE('JUMI',v_intro);
-			IF l_pos <> 0 THEN			
-				UPDATE j17_tags SET description = v_intro, metadesc = v_metadesc, metakey = v_kwords WHERE id = v_tid;
-			ELSE
+			SET @l_pos=LOCATE('JUMI',upper(v_intro));
+			IF @l_pos <> 0 THEN			
 				UPDATE j17_tags SET metadesc = v_metadesc, metakey = v_kwords WHERE id = v_tid;
+			ELSE
+				UPDATE j17_tags SET description = v_intro, metadesc = v_metadesc, metakey = v_kwords WHERE id = v_tid;
 			END IF;
 				
 			
