@@ -129,7 +129,13 @@ BEGIN
 		IF v_aid > 0 THEN
 			SELECT introtext, created_by, created_by_alias, metakey, metadesc INTO v_intro, v_uid, v_ualias, v_kwords, v_metadesc FROM j17_content WHERE ID = v_aid;
 			
-			UPDATE j17_tags SET description = v_intro, metadesc = v_metadesc, metakey = v_kwords WHERE id = v_tid;
+			SET l_pos=LOCATE('JUMI',v_intro);
+			IF l_pos <> 0 THEN			
+				UPDATE j17_tags SET description = v_intro, metadesc = v_metadesc, metakey = v_kwords WHERE id = v_tid;
+			ELSE
+				UPDATE j17_tags SET metadesc = v_metadesc, metakey = v_kwords WHERE id = v_tid;
+			END IF;
+				
 			
 			SET v_lmsg = CONCAT(v_lmsg, ' Intro article present and tag updated with article metadata. The intro article id is ', v_aid, '.');
 			
@@ -171,11 +177,11 @@ BEGIN
 		
 		-- author or alias
 		IF v_author = 1 THEN
-			SET v_condition = CONCAT(' ', sqlConnector, ' a.created_by = ', v_uid, ' ');
+			SET v_condition = CONCAT(' a.created_by = ', v_uid, ' ');
 		END IF;
 
 		IF (v_alias = 1 AND v_ualias IS NOT NULL AND v_ualias <> '') THEN
-			SET matchAuthorAliasCondition = CONCAT(' ', sqlConnector, ' UPPER(a.created_by_alias) = ', QUOTE(UPPER(v_ualias)), ' ');
+			SET matchAuthorAliasCondition = CONCAT(' UPPER(a.created_by_alias) = ', QUOTE(UPPER(v_ualias)), ' ');
 		ELSE
 			SET matchAuthorAliasCondition = '';
 		END IF;	
@@ -187,16 +193,28 @@ BEGIN
 			SET v_query = CONCAT(v_query, ' AND a.catid in (',  TRIM(v_cid), ') ');
 		END IF;
 		
-		IF v_kwords <> '' THEN
-			SET v_query = CONCAT(v_query, ' AND ', v_kwords);
+		IF (v_kwords <> '' OR v_condition <> '' OR matchAuthorAliasCondition <> '') THEN
+			SET v_query = CONCAT(v_query, ' AND ( ');
 		END IF;
 		
-		IF v_condition <> '' THEN
-			SET v_query = CONCAT(v_query, v_condition);
+		IF v_kwords <> '' THEN
+			SET v_query = CONCAT(v_query, v_kwords);
+		END IF;
+		
+		IF (v_condition <> '' AND v_kwords <> '') THEN
+			SET v_query = CONCAT(v_query, ' ', sqlConnector, ' ', v_condition);
+		ELSEIF (v_condition <> '') THEN
+			SET v_query = CONCAT(v_query, ' ', v_condition);
 		END IF;
 
-		IF matchAuthorAliasCondition <> '' THEN
-			SET v_query = CONCAT(v_query, matchAuthorAliasCondition);
+		IF (matchAuthorAliasCondition <> '' AND (v_condition <> '' OR v_kwords <> '')) THEN
+			SET v_query = CONCAT(v_query, ' ', sqlConnector, ' ', matchAuthorAliasCondition);
+		ELSEIF matchAuthorAliasCondition <> '' THEN
+			SET v_query = CONCAT(v_query, ' ', matchAuthorAliasCondition);
+		END IF;
+		
+		IF (v_kwords <> '' OR v_condition <> '' OR matchAuthorAliasCondition <> '') THEN
+			SET v_query = CONCAT(v_query, ' ) ');
 		END IF;
 		
 		SET v_lmsg = CONCAT(v_lmsg, ' Generated query is : ' , v_query, '.');
@@ -209,4 +227,5 @@ BEGIN
 	SET v_finished = 0;
 
 	CLOSE id_cursor;
-END$$	
+END$$
+DELIMITER ;
