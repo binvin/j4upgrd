@@ -1,205 +1,212 @@
-DROP PROCEDURE cinud_fjremove;
+DROP PROCEDURE cinud_fjremove_tags;
 
 DELIMITER $$
-CREATE PROCEDURE cinud_fjremove ()
+CREATE PROCEDURE cinud_fjremove_tags ()
 BEGIN
+	DECLARE v_finished INTEGER DEFAULT 0;
 
-DECLARE v_finished INTEGER DEFAULT 0;
+	DECLARE v_menuid int DEFAULT 0;
+	DECLARE v_title VARCHAR(255) DEFAULT '';
+	DECLARE v_aid int DEFAULT 0;
+	DECLARE v_kwords MEDIUMTEXT DEFAULT "";
+	DECLARE v_match VARCHAR(25);
+	DECLARE v_cid MEDIUMTEXT DEFAULT "";
+	DECLARE v_author int DEFAULT 0;
+	DECLARE v_alias int DEFAULT 0;
 
-DECLARE v_menuid int DEFAULT 0;
-DECLARE v_title VARCHAR(255) DEFAULT '';
-DECLARE v_aid int DEFAULT 0;
-DECLARE v_kwords MEDIUMTEXT DEFAULT "";
-DECLARE v_match VARCHAR(25);
-DECLARE v_cid MEDIUMTEXT DEFAULT "";
-DECLARE v_author int DEFAULT 0;
-DECLARE v_alias int DEFAULT 0;
+	DECLARE v_tcnt int DEFAULT 0;
+	DECLARE v_tid int DEFAULT 0;
+	DECLARE v_maxrgt int DEFAULT 0;
+	DECLARE v_atitle VARCHAR(255) DEFAULT '';
 
-DECLARE v_tcnt int DEFAULT 0;
-DECLARE v_tid int DEFAULT 0;
-DECLARE v_maxrgt int DEFAULT 0;
-DECLARE v_atitle VARCHAR(255) DEFAULT '';
+	DECLARE v_lmsg LONGTEXT DEFAULT '';
 
-DECLARE v_intro LONGTEXT DEFAULT "";
-DECLARE v_uid int DEFAULT 0;
-DECLARE v_ualias VARCHAR(255) DEFAULT NULL;
-DECLARE v_metadesc MEDIUMTEXT DEFAULT "";
-
-DECLARE keys TEXT;
-DECLARE keySeparator CHAR(1) DEFAULT ',';
-DECLARE sqlConnector VARCHAR(4);
-DECLARE likes TEXT DEFAULT '';
-DECLARE keywordSelection LONGTEXT DEFAULT '';
-
-DECLARE v_condition VARCHAR(500) DEFAULT '';
-DECLARE matchAuthorAliasCondition VARCHAR(255) DEFAULT '';
-
-DECLARE v_afinished INTEGER DEFAULT 0;
-
-DECLARE v_articleid int DEFAULT 0;
-
--- declare cursor for article id
-DEClARE id_cursor CURSOR FOR 
-SELECT
-	id,
-    title, 
-    REPLACE(JSON_EXTRACT(params, '$.id'), '"', '') AS 'aid', 
-    REPLACE(JSON_EXTRACT(params, '$.keywords'), '"', '') AS 'keywords', 
-    REPLACE(JSON_EXTRACT(params, '$.anyOrAll'), '"', '') AS 'anyOrAll', 
-    REPLACE(REPLACE(REPLACE(JSON_EXTRACT(params, '$.catid'), '"', ''), '[', ''), ']', '') AS 'catid', 
-    REPLACE(JSON_EXTRACT(params, '$.matchAuthor'), '"', '') AS 'matchAuthor', 
-    REPLACE(JSON_EXTRACT(params, '$.matchAuthorAlias'), '"', '') AS 'matchAuthorAlias' 
-FROM 
-    j17_menu
-WHERE 
-    published = 1 
-    AND client_id = 0 
-    AND component_id = 10143 
-    AND id IN (786, 1439);
-
--- declare NOT FOUND handler
-DECLARE CONTINUE HANDLER 
-       FOR NOT FOUND SET v_finished = 1;
- 
-OPEN id_cursor;
- 
-get_id: LOOP
-	FETCH id_cursor INTO v_menuid, v_title, v_aid, v_kwords, v_match, v_cid, v_author, v_alias;
- 
-	IF v_finished = 1 THEN
-		LEAVE get_id;
-	END IF;
+	DECLARE v_intro LONGTEXT DEFAULT "";
+	DECLARE v_uid int DEFAULT 0;
+	DECLARE v_ualias VARCHAR(255) DEFAULT NULL;
+	DECLARE v_metadesc MEDIUMTEXT DEFAULT "";
 	
-	-- check if the title tag exists.
-	SELECT count(*) INTO v_tcnt FROM j17_tags where title = v_title;
+	DECLARE sqlConnector VARCHAR(4);
 	
-	IF v_tcnt > 0 THEN
-		SELECT id INTO v_tid FROM j17_tags where title = v_title;
-	ELSE
-		SELECT MAX(rgt) into v_maxrgt FROM j17_tags;
+	DECLARE v_condition VARCHAR(500) DEFAULT '';
+	DECLARE matchAuthorAliasCondition VARCHAR(255) DEFAULT '';
 
-		SET v_atitle = REPLACE(v_title,'?','');
-		SET v_atitle = REPLACE(v_atitle,'!','');
-		SET v_atitle = REPLACE(v_atitle,'&','');
-		SET v_atitle = REPLACE(v_atitle,"'","");
-		SET v_atitle = REPLACE(v_atitle,'(','');
-		SET v_atitle = REPLACE(v_atitle,')','');
-		SET v_atitle = REPLACE(v_atitle,'-','');
-		SET v_atitle = REPLACE(v_atitle,'.','');
-		SET v_atitle = REPLACE(v_atitle,'/','');
-		SET v_atitle = REPLACE(v_atitle,'’','');
-		SET v_atitle = REPLACE(v_atitle,' ','-');
-		
-		INSERT INTO j17_tags
-			(parent_id, level, path, title, alias, published,access, created_user_id, rgt, lgt)
-		VALUES
-			(1, 1, lower(v_atitle), v_title, lower(v_atitle), 1, 1, 42, (v_maxrgt + 2), (v_maxrgt + 1) );
-		
-		UPDATE j17_tags SET rgt = (v_maxrgt + 3) WHERE j17_tags.id = 1;
+	DECLARE v_query LONGTEXT DEFAULT '';
 
-		SELECT id INTO v_tid FROM j17_tags where title = v_title;
-	END IF;
-	
-	-- check if intro article is present
-	IF v_aid > 0 THEN
-		SELECT introtext, created_by, created_by_alias, metakey, metadesc INTO v_intro, v_uid, v_ualias, v_kwords, v_metadesc FROM j17_content WHERE ID = v_aid;
-	END IF;
-
-	-- any or all condition
-	IF (v_kwords <> '' AND v_kwords IS NOT NULL) THEN	
-		SET v_kwords = TRIM(v_kwords);
-		SET keys = REPLACE(v_kwords, keySeparator, CONCAT(keySeparator, ' '));
-		SET keys = CONCAT(keySeparator, keys, keySeparator);
-		SET sqlConnector = IF(v_match = 'any', ' OR ', ' AND ');
-    
-		WHILE LENGTH(keys) > 0 DO
-			SET likes = CONCAT(likes, ',', SUBSTRING_INDEX(keys, keySeparator, 2), ',');
-			SET keys = SUBSTRING(keys, LENGTH(SUBSTRING_INDEX(keys, keySeparator, 2)) + 2);
-		END WHILE;
-    
-		WITH RECURSIVE cte AS (
-			SELECT 1 AS n, 
-				SUBSTRING_INDEX(likes, ',', 1) AS keyword
-			UNION ALL
-			SELECT n + 1, 
-				SUBSTRING_INDEX(SUBSTRING_INDEX(likes, ',', n + 1), ',', -1) AS keyword
-			FROM cte
-			WHERE LENGTH(likes) > LENGTH(keyword)
-		)
-		SELECT GROUP_CONCAT(
-			'CONCAT(",", REPLACE(a.metakey, ", ", ","), ",") LIKE "%', 
-			keyword, 
-			'%" SEPARATOR ' ' , '
-			', sqlConnector, '
-			'
-		) INTO keywordSelection
-		FROM cte
-		WHERE keyword != '';
-	END IF
-	
-	-- author or alias
-	IF v_author = 1 THEN
-		SET v_condition = CONCAT(' ', sqlConnector, ' a.created_by = ', v_uid);
-	END IF;
-
-    IF (v_alias = 1 AND v_ualias IS NOT NULL) THEN
-		SET matchAuthorAliasCondition = CONCAT(' ', sqlConnector, ' UPPER(a.created_by_alias) = ', QUOTE(UPPER(v_ualias)), ' ');
-	ELSE
-		SET matchAuthorAliasCondition = '';
-	END IF;	
-	
-	-- full query
-	SET query = 'SELECT ID FROM j17_content a WHERE STATE = 1 ';
-	
-	IF v_cid <> '' THEN
-		SET query = CONCAT(query, ' AND a.catid in ',  v_cid)
-	END IF;
-	
-	IF keywordSelection <> '' THEN
-		SET query = CONCAT(query, ' AND ', keywordSelection)
-	END IF;
-	
-	IF v_condition <> '' THEN
-		SET query = CONCAT(query, v_condition)
-	END IF;
-
-	IF matchAuthorAliasCondition <> '' THEN
-		SET query = CONCAT(query, matchAuthorAliasCondition)
-	END IF;		
-	
-	-- second loop
-	DEClARE aid_cursor CURSOR FOR query;
+	-- declare cursor for all FJ menu ids
+	DEClARE id_cursor CURSOR FOR 
+	SELECT
+		id,
+		title, 
+		REPLACE(JSON_EXTRACT(params, '$.id'), '"', '') AS 'aid', 
+		REPLACE(JSON_EXTRACT(params, '$.keywords'), '"', '') AS 'keywords', 
+		REPLACE(JSON_EXTRACT(params, '$.anyOrAll'), '"', '') AS 'anyOrAll', 
+		REPLACE(REPLACE(REPLACE(JSON_EXTRACT(params, '$.catid'), '"', ''), '[', ''), ']', '') AS 'catid', 
+		REPLACE(JSON_EXTRACT(params, '$.matchAuthor'), '"', '') AS 'matchAuthor', 
+		REPLACE(JSON_EXTRACT(params, '$.matchAuthorAlias'), '"', '') AS 'matchAuthorAlias' 
+	FROM 
+		j17_menu
+	WHERE 
+		published = 1 
+		AND client_id = 0 
+		AND component_id = 10143;
+		-- AND id IN (786, 1439);
 
 	-- declare NOT FOUND handler
-	DECLARE CONTINUE HANDLER 
-		FOR NOT FOUND SET v_afinished = 1;
- 
-	OPEN aid_cursor;
- 
-	get_aid: LOOP
-		FETCH aid_cursor INTO v_articleid;
+	DECLARE CONTINUE HANDLER FOR NOT FOUND 
+		BEGIN
+			GET DIAGNOSTICS CONDITION 1 @sqlstate = RETURNED_SQLSTATE, @errno = MYSQL_ERRNO, @text = MESSAGE_TEXT;
+			-- SET @error_message = CONCAT('No data tag - menu, tag and article info - ', v_menuid, ' - ', v_title, ' - ', v_maxrgt, ' - ', v_tid, ' - ', v_articleid, ' - Error: ', @errno, ' - ', @text, ' (SQLSTATE: ', @sqlstate, ')');
+			SET @error_message = CONCAT('Tag SP Error: ', @errno, ' - ', @text, ' (SQLSTATE: ', @sqlstate, ')');
+			INSERT INTO error_log (error_message, occurred_at) VALUES (@error_message, NOW());
+			INSERT INTO error_log (error_message, occurred_at) VALUES (CONCAT('Details 1: ', v_lmsg), NOW());
+			SET v_finished = 1;
+		END;
+	DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+		BEGIN
+			GET DIAGNOSTICS CONDITION 1 @sqlstate = RETURNED_SQLSTATE, @errno = MYSQL_ERRNO, @text = MESSAGE_TEXT;
+			-- SET @error_message = CONCAT('SQL Exception tag - menu, tag and article info - ', v_menuid, ' - ', v_title, ' - ', v_maxrgt, ' - ', v_tid, ' - ', v_articleid, ' - Error: ', @errno, ' - ', @text, ' (SQLSTATE: ', @sqlstate, ')');
+			SET @error_message = CONCAT('Error: ', @errno, ' - ', @text, ' (SQLSTATE: ', @sqlstate, ')', '. In tag sqlexception handler.');
+			INSERT INTO error_log (error_message, occurred_at) VALUES (@error_message, NOW());
+			INSERT INTO error_log (error_message, occurred_at) VALUES (CONCAT('Details 2: ', v_lmsg), NOW());
+			SET v_finished = 1;
+		END;
+
+	-- Open cursor and loop for every menu. 
+	OPEN id_cursor;
+	 
+	get_id: LOOP
+		FETCH id_cursor INTO v_menuid, v_title, v_aid, v_kwords, v_match, v_cid, v_author, v_alias;
 		
-		IF v_afinished = 1 THEN
-			LEAVE get_aid;
+		SET v_lmsg = CONCAT('Menu title is ', v_title, ' and Menu id is ', v_menuid, '.');
+	 
+		IF v_finished = 1 THEN
+			LEAVE get_id;
 		END IF;
 		
-		-- add tag
-		INSERT INTO j17_contentitem_tag_map (tag_id, type_alias, content_item_id)
-		VALUES (v_tid, 'com_content.article', v_articleid);
+		-- check if the title tag already exists.
+		SELECT count(*) INTO v_tcnt FROM j17_tags where title = v_title;
 		
-	END LOOP get_aid;
- 
-	CLOSE aid_cursor;
-	
-	-- update menu
-	SET v_link = CONCAT('index.php?option=com_tags&view=tag&layout=list&id[0]=', v_tid, '&types[0]=1');
-	UPDATE j17_menu 
-	SET link = v_link, 
-	component_id = '29', 
-	params = '{\"show_tag_title\":\"\",\"tag_list_show_tag_image\":\"\",\"tag_list_show_tag_description\":\"\",\"tag_list_image\":\"\",\"tag_list_description\":\"\",\"tag_list_orderby\":\"\",\"tag_list_orderby_direction\":\"\",\"tag_list_show_item_image\":\"\",\"tag_list_show_item_description\":\"\",\"tag_list_item_maximum_characters\":\"\",\"filter_field\":\"\",\"show_pagination_limit\":\"0\",\"display_num\":\"0\",\"show_pagination\":\"1\",\"show_pagination_results\":\"\",\"tag_list_show_date\":\"\",\"date_format\":\"\",\"return_any_or_all\":\"\",\"include_children\":\"\",\"show_feed_link\":\"0\",\"menu-anchor_title\":\"\",\"menu-anchor_css\":\"\",\"menu_image\":\"\",\"menu_image_css\":\"\",\"menu_text\":1,\"menu_show\":1,\"page_title\":\"\",\"show_page_heading\":\"0\",\"page_heading\":\"\",\"pageclass_sfx\":\"\",\"menu-meta_description\":\"\",\"menu-meta_keywords\":\"\",\"robots\":\"\",\"secure\":0}' 
-	WHERE j17_menu.id = v_menuid;	
+		IF v_tcnt > 0 THEN
+			-- Tag already exists.
+			SET v_lmsg = CONCAT(v_lmsg, ' Tag already exists and the tag id is ');			
+		ELSE
+			-- Create New tag.
+			
+			-- Since we need to insert new tag, fetch the max rgt value and remove spl chars from title for alias.
+			SELECT MAX(rgt) into v_maxrgt FROM j17_tags;
+			
+			-- Remove special characters and replace space with hyphen.
+			SET v_atitle = REPLACE(v_title,'?','');
+			SET v_atitle = REPLACE(v_atitle,'!','');
+			SET v_atitle = REPLACE(v_atitle,'&','');
+			SET v_atitle = REPLACE(v_atitle,"'","");
+			SET v_atitle = REPLACE(v_atitle,'(','');
+			SET v_atitle = REPLACE(v_atitle,')','');
+			SET v_atitle = REPLACE(v_atitle,'-','');
+			SET v_atitle = REPLACE(v_atitle,'.','');
+			SET v_atitle = REPLACE(v_atitle,'/','');
+			SET v_atitle = REPLACE(v_atitle,'’','');
+			SET v_atitle = REPLACE(v_atitle,'  ','-');
+			SET v_atitle = REPLACE(v_atitle,' ','-');
+			
+			-- Insert new tag and update the ROOT tag's rgt.
+			INSERT INTO j17_tags
+				(parent_id, level, path, title, alias, published, access, created_user_id, rgt, lft, `language`)
+			VALUES
+				(1, 1, lower(v_atitle), v_title, lower(v_atitle), 1, 1, 42, (v_maxrgt + 1), (v_maxrgt), '*' );
+				
+			UPDATE j17_tags SET rgt = (v_maxrgt + 2) WHERE id = 1;
+			
+			SET v_lmsg = CONCAT(v_lmsg, ' New tag created and the tag id is ', v_tid, '.');
+		END IF;
+		
+		-- Fetch the tag id.
+		SELECT id INTO v_tid FROM j17_tags where title = v_title;
+		SET v_lmsg = CONCAT(v_lmsg, v_tid, '.');		
 
-END LOOP get_id;
- 
-CLOSE id_cursor;
+		-- check if intro article is present
+		IF v_aid > 0 THEN
+			SELECT introtext, created_by, created_by_alias, metakey, metadesc INTO v_intro, v_uid, v_ualias, v_kwords, v_metadesc FROM j17_content WHERE ID = v_aid;
+			
+			UPDATE j17_tags SET description = v_intro, metadesc = v_metadesc, metakey = v_kwords WHERE id = v_tid;
+			
+			SET v_lmsg = CONCAT(v_lmsg, ' Intro article present and tag updated with article metadata. The intro article id is ', v_aid, '.');
+			
+		END IF;
+
+		-- any or all condition
+		IF (v_kwords <> '' AND v_kwords IS NOT NULL) THEN
+			-- Trim the string
+			SET v_kwords = TRIM(v_kwords);
+			
+			-- Remove space before and after the comma.
+			SET v_kwords = 	REPLACE(v_kwords,', ', ',');
+			SET v_kwords = 	REPLACE(v_kwords,' ,' ,',');
+
+			-- Escape the special charcaters.
+			SET v_kwords = REPLACE(v_kwords,'?','\?');
+			SET v_kwords = REPLACE(v_kwords,'!','\!');
+			SET v_kwords = REPLACE(v_kwords,'&','\&');
+			SET v_kwords = REPLACE(v_kwords,"'","\'");
+			SET v_kwords = REPLACE(v_kwords,'(','\(');
+			SET v_kwords = REPLACE(v_kwords,')','\)');
+			SET v_kwords = REPLACE(v_kwords,'-','\-');
+			SET v_kwords = REPLACE(v_kwords,'.','\.');
+			SET v_kwords = REPLACE(v_kwords,'/','\/');
+			SET v_kwords = REPLACE(v_kwords,'’','\’');
+
+			-- SET the correct logical operator.
+			SET sqlConnector = IF(v_match = 'any', ' OR ', ' AND ');
+
+			-- Build the query by replacing the comma.
+			SET v_kwords = REPLACE(v_kwords, ',', CONCAT('%" ', sqlConnector, ' CONCAT(",", REPLACE(a.metakey,", ",","),",") LIKE "%,'));
+
+			-- Prepend and Append Comma.
+			SET v_kwords = CONCAT(',', v_kwords, ',');
+
+			-- Complete query bulding.
+			SET v_kwords = CONCAT(' CONCAT(",", REPLACE(a.metakey,", ",","),",") LIKE "%', v_kwords, '%"');
+		END IF;
+		
+		-- author or alias
+		IF v_author = 1 THEN
+			SET v_condition = CONCAT(' ', sqlConnector, ' a.created_by = ', v_uid, ' ');
+		END IF;
+
+		IF (v_alias = 1 AND v_ualias IS NOT NULL AND v_ualias <> '') THEN
+			SET matchAuthorAliasCondition = CONCAT(' ', sqlConnector, ' UPPER(a.created_by_alias) = ', QUOTE(UPPER(v_ualias)), ' ');
+		ELSE
+			SET matchAuthorAliasCondition = '';
+		END IF;	
+		
+		-- full query
+		SET v_query = 'SELECT ID FROM j17_content a WHERE a.STATE = 1 ';
+		
+		IF v_cid <> '' THEN
+			SET v_query = CONCAT(v_query, ' AND a.catid in (',  TRIM(v_cid), ') ');
+		END IF;
+		
+		IF v_kwords <> '' THEN
+			SET v_query = CONCAT(v_query, ' AND ', v_kwords);
+		END IF;
+		
+		IF v_condition <> '' THEN
+			SET v_query = CONCAT(v_query, v_condition);
+		END IF;
+
+		IF matchAuthorAliasCondition <> '' THEN
+			SET v_query = CONCAT(v_query, matchAuthorAliasCondition);
+		END IF;
+		
+		SET v_lmsg = CONCAT(v_lmsg, ' Generated query is : ' , v_query, '.');
+		
+		-- Add the menu id, tag id and query to the temp table.
+		INSERT INTO fj_remove (menuid, tagid, query) VALUES (v_menuid, v_tid, v_query);
+		
+	END LOOP get_id;
+	
+	SET v_finished = 0;
+
+	CLOSE id_cursor;
 END$$	
